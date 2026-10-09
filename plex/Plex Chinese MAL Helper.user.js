@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Plex 中文番剧 MAL 匹配助手
 // @namespace    https://github.com/haomingz/userscripts
-// @version      1.0.0
+// @version      1.1.0
 // @description  匹配 Plex 中文番剧标题，展示 MAL 地址，并辅助 MAL-Sync 关联。
 // @author       haomingz
 // @match        https://app.plex.tv/*
@@ -239,6 +239,7 @@
     context: null, signature: '', mapping: null, candidates: [], records: new Map(),
     generation: 0, bridgeSeen: false, replaying: false, datasetPromise: null,
     entries: null, dataTime: 0, lastFetch: 0, stale: false, timer: null, ui: null,
+    layoutFrame: null, anchor: null, anchorRect: null, observedLayout: new Set(),
   };
 
   const setting = name => GM_getValue(PREFIX + name, true);
@@ -399,29 +400,130 @@
     state.ui.status.classList.toggle('error', error);
   }
 
+  const FLOAT_SIZE = 40;
+  const FLOAT_GAP = 8;
+  const PLAYER_SELECTOR = '[class*="Player-fullPlayerContainer-"], [class*="VideoPlayerContainer-videoPlayerContainer"], video';
+  const layoutObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleLayout) : null;
+
+  function visibleRect(node) {
+    const rect = node.getBoundingClientRect();
+    const style = getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none'
+      && style.visibility !== 'hidden' ? rect : null;
+  }
+
+  function playerExpanded(players) {
+    if (document.fullscreenElement || document.webkitFullscreenElement) return true;
+    return players.some(node => {
+      if (node.webkitDisplayingFullscreen) return true;
+      const rect = visibleRect(node);
+      if (!rect) return false;
+      // Plex 4 的 fullPlayerContainer 区分满窗口播放器与 miniPlayerContainer。
+      if (String(node.className).includes('Player-fullPlayerContainer-')) return true;
+      const width = Math.max(0, Math.min(rect.right, innerWidth) - Math.max(rect.left, 0));
+      const height = Math.max(0, Math.min(rect.bottom, innerHeight) - Math.max(rect.top, 0));
+      return width >= innerWidth * 0.85 && height >= innerHeight * 0.85;
+    });
+  }
+
+  function scheduleLayout() {
+    if (state.layoutFrame !== null) return;
+    state.layoutFrame = requestAnimationFrame(() => {
+      state.layoutFrame = null;
+      updateLayout();
+    });
+  }
+
+  function updateLayout() {
+    if (!state.ui) return;
+    const { host, panel } = state.ui;
+    const anchor = document.querySelector('button.open-info-popup.floatbutton');
+    const players = [...document.querySelectorAll(PLAYER_SELECTOR)];
+    if (layoutObserver) {
+      const watched = new Set([anchor, ...players].filter(Boolean));
+      for (const node of state.observedLayout) if (!watched.has(node)) layoutObserver.unobserve(node);
+      for (const node of watched) if (!state.observedLayout.has(node)) layoutObserver.observe(node);
+      state.observedLayout = watched;
+    }
+    if (anchor !== state.anchor) { state.anchor = anchor; state.anchorRect = null; }
+    if (anchor) {
+      const rect = visibleRect(anchor);
+      if (rect) state.anchorRect = { left: rect.left, top: rect.top, width: rect.width };
+    }
+    const reference = state.anchorRect;
+    const clamp = (value, min, max) => Math.max(min, Math.min(value, Math.max(min, max)));
+    // MAL-Sync 尚未显示时按其默认 56px 按钮的位置预留同样的间距。
+    const x = clamp(reference ? reference.left + (reference.width - FLOAT_SIZE) / 2 : innerWidth - 88,
+      FLOAT_GAP, innerWidth - FLOAT_SIZE - FLOAT_GAP);
+    const y = clamp(reference ? reference.top - FLOAT_GAP - FLOAT_SIZE : innerHeight - 144,
+      FLOAT_GAP, innerHeight - FLOAT_SIZE - FLOAT_GAP);
+    host.style.left = `${Math.round(x)}px`;
+    host.style.top = `${Math.round(y)}px`;
+    const panelWidth = Math.min(390, innerWidth - 32);
+    panel.style.left = `${clamp(x + FLOAT_SIZE - panelWidth, FLOAT_GAP, innerWidth - panelWidth - FLOAT_GAP) - x}px`;
+    // 锚点靠近顶部时向下展开，确保面板仍有可操作的高度。
+    const bottom = y + FLOAT_SIZE < 200 ? Math.min(innerHeight - FLOAT_GAP, y + FLOAT_SIZE + innerHeight * 0.7) : y + FLOAT_SIZE;
+    panel.style.bottom = `${y + FLOAT_SIZE - bottom}px`;
+    panel.style.setProperty('--panel-max-height', `${bottom - FLOAT_GAP}px`);
+    host.hidden = playerExpanded(players);
+  }
+
+  function setPanelOpen(open, focus = false) {
+    if (!state.ui) return;
+    const { panel, launcher, input, host } = state.ui;
+    state.ui.open = open;
+    panel.hidden = !open;
+    launcher.hidden = open;
+    launcher.setAttribute('aria-expanded', String(open));
+    GM_setValue(PREFIX + 'collapsed', !open);
+    updateLayout();
+    if (focus && !host.hidden) (open ? input : launcher).focus({ preventScroll: true });
+  }
+
   function mount() {
     if (!document.body || state.ui) return;
     const host = element('div', '', { id: 'plex-chinese-mal-helper' });
     const shadow = host.attachShadow({ mode: 'open' });
     const style = element('style');
     style.textContent = `
-      :host { all: initial; position: fixed; left: 16px; bottom: 16px; z-index: 2147483000;
+      :host { all: initial; position: fixed; left: calc(100vw - 88px); top: calc(100vh - 144px);
+        width: 40px; height: 40px; z-index: 2147483000;
         font: 13px/1.5 system-ui, sans-serif; color: #eee; color-scheme: dark; }
-      * { box-sizing: border-box; } details { width: min(390px, calc(100vw - 32px)); background: #202126;
-        border: 1px solid #5c5e65; border-radius: 10px; box-shadow: 0 4px 24px #0008; }
-      summary { cursor: pointer; padding: 10px 14px; font-weight: 600; }
-      main { padding: 0 14px 14px; max-height: min(70vh, 650px); overflow: auto; }
+      :host([hidden]) { display: none !important; }
+      * { box-sizing: border-box; } [hidden] { display: none !important; }
+      .panel { position: absolute; bottom: 0; right: 0; display: flex; flex-direction: column;
+        width: min(390px, calc(100vw - 32px)); max-height: min(70vh, 650px, var(--panel-max-height, 70vh));
+        background: #202126; border: 1px solid #5c5e65; border-radius: 10px; box-shadow: 0 4px 24px #0008; }
+      header { display: flex; align-items: center; justify-content: space-between; flex: none; padding: 8px 10px 8px 14px; }
+      h2 { margin: 0; font: inherit; font-weight: 600; }
+      main { padding: 0 14px 14px; overflow: auto; min-height: 0; }
       p { margin: 8px 0; overflow-wrap: anywhere; } form, .actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
       input[type=text] { min-width: 130px; flex: 1; padding: 7px; border: 1px solid #777; border-radius: 4px; background: #141519; color: #fff; }
       button { cursor: pointer; border: 1px solid #6d6f76; border-radius: 4px; background: #34363d; color: #fff; padding: 6px 9px; font: inherit; }
       button:hover { background: #494c56; } a { color: #8fc7ff; } .muted { color: #bbb; font-size: 12px; }
+      .launcher { width: 40px; height: 40px; padding: 0; display: grid; place-items: center; border-radius: 50%;
+        background: rgba(32, 33, 38, .5); border-color: rgba(220, 224, 235, .35); opacity: .55;
+        font-size: 18px; font-weight: 600; backdrop-filter: blur(4px); transition: opacity .15s, background .15s; }
+      .launcher:hover, .launcher:focus-visible { opacity: 1; background: rgba(52, 54, 61, .9); }
+      button:focus-visible { outline: 2px solid #8fc7ff; outline-offset: 3px; }
+      .close { border: none; background: transparent; width: 28px; height: 28px; padding: 0; font-size: 22px; }
+      @media (prefers-reduced-motion: reduce) { .launcher { transition: none; } }
       .error { color: #ffb0a3; } .candidate { border-top: 1px solid #505159; padding: 8px 0; }
       label { display: block; margin-top: 6px; } .selected { border-left: 3px solid #e5a934; padding-left: 8px; }
     `;
     shadow.append(style);
-    const details = element('details');
-    details.open = !GM_getValue(PREFIX + 'collapsed', false);
-    const summary = element('summary', '中文番剧 → MAL');
+    const panel = element('section', '', { class: 'panel', id: 'plex-mal-panel', role: 'dialog', 'aria-labelledby': 'plex-mal-heading' });
+    const header = element('header');
+    const heading = element('h2', '中文番剧 → MAL', { id: 'plex-mal-heading' });
+    const close = button('×', () => setPanelOpen(false, true));
+    close.className = 'close';
+    close.setAttribute('aria-label', '收起中文番剧 MAL 助手');
+    header.append(heading, close);
+    const launcher = button('中', () => setPanelOpen(true, true));
+    launcher.className = 'launcher';
+    launcher.setAttribute('title', '中文番剧 → MAL');
+    launcher.setAttribute('aria-label', '打开中文番剧 MAL 助手');
+    launcher.setAttribute('aria-controls', 'plex-mal-panel');
     const main = element('main');
     const title = element('p', '打开番剧详情，或输入番剧标题搜索。');
     const form = element('form');
@@ -459,11 +561,18 @@
       else status(state.stale ? '更新失败，继续使用已缓存数据。' : '番剧数据已更新。');
     }));
     main.append(actions, element('p', '标题数据：bangumi-data（CC BY 4.0）。候选请核对季数；观看进度由 MAL-Sync 处理。', { class: 'muted' }));
-    details.append(summary, main);
-    shadow.append(details);
+    panel.append(header, main);
+    shadow.append(launcher, panel);
     document.body.append(host);
-    state.ui = { host, details, input, title, status: message, selected, candidates, malInput };
-    details.addEventListener('toggle', () => GM_setValue(PREFIX + 'collapsed', !details.open));
+    state.ui = { host, panel, launcher, open: false, input, title, status: message, selected, candidates, malInput };
+    shadow.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && state.ui.open) {
+        event.preventDefault();
+        event.stopPropagation();
+        setPanelOpen(false, true);
+      }
+    });
+    setPanelOpen(!GM_getValue(PREFIX + 'collapsed', true));
   }
 
   function renderMapping() {
@@ -656,18 +765,28 @@
   }
   window.addEventListener('hashchange', scheduleRefresh);
   window.addEventListener('popstate', scheduleRefresh);
+  window.addEventListener('resize', scheduleLayout);
+  document.addEventListener('fullscreenchange', updateLayout);
+  document.addEventListener('webkitfullscreenchange', updateLayout);
+  document.addEventListener('webkitbeginfullscreen', scheduleLayout, true);
+  document.addEventListener('webkitendfullscreen', scheduleLayout, true);
   const observer = new MutationObserver(mutations => {
-    if (mutations.some(mutation => !state.ui?.host.contains(mutation.target))) scheduleRefresh();
+    const external = mutations.filter(mutation => !state.ui?.host.contains(mutation.target));
+    if (external.length) scheduleLayout();
+    if (external.some(mutation => mutation.type !== 'attributes' || mutation.attributeName === 'href')) scheduleRefresh();
   });
   function observeDocument() {
-    if (document.documentElement) observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    if (document.documentElement) observer.observe(document.documentElement, {
+      childList: true, subtree: true, characterData: true, attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'href'],
+    });
   }
   observeDocument();
   document.addEventListener('DOMContentLoaded', observeDocument, { once: true });
   document.addEventListener('DOMContentLoaded', scheduleRefresh, { once: true });
   GM_registerMenuCommand('显示/收起中文番剧 MAL 助手', () => {
     mount();
-    if (state.ui) state.ui.details.open = !state.ui.details.open;
+    if (state.ui) setPanelOpen(!state.ui.open, true);
   });
   scheduleRefresh();
 })();

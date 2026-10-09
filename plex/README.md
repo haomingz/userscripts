@@ -7,7 +7,7 @@
 1. 安装 Tampermonkey。
 2. 打开仓库中的 [`Plex Chinese MAL Helper.user.js`](./Plex%20Chinese%20MAL%20Helper.user.js)，复制全部内容到 Tampermonkey 的新建脚本中，保存。
 3. 同时使用 MAL-Sync 时，先按其 [Plex 配置说明](https://github.com/MALSync/MALSync/wiki/Emby-Plex) 配置。建议将动画库名称设为 `Anime`，并确认 MAL-Sync 已登录 MAL。
-4. 刷新 Plex 网页，打开番剧的季详情或播放页面，左下角会出现“中文番剧 → MAL”面板。
+4. 刷新 Plex 网页，打开番剧的季详情或播放页面，点击右下角半透明的“中”按钮展开“中文番剧 → MAL”面板。安装时默认收起，升级时保留已保存的展开/收起状态。
 
 脚本默认匹配 `https://app.plex.tv/*`、`http://localhost:32400/web/*` 和 `http://127.0.0.1:32400/web/*`。
 
@@ -23,7 +23,11 @@
 - **复制与纠正**：已关联的条目提供“复制 MAL 地址”“复制匹配标题”和“填入 MAL-Sync”。
 - **取消关联**：删除本助手保存的当前关联。MAL-Sync 自己已保存的关联需要在其纠正窗口修改。
 
-可以收起面板，或通过 Tampermonkey 菜单重新展开。“唯一精确匹配时自动关联”和“为 MAL-Sync 提供匹配标题”可分别关闭。
+面板右上角的 `×` 按钮可以收起；在面板输入框内按 Escape 也能收起，之后仅显示一个 **40 × 40 像素的半透明圆形“中”按钮**，悬停或键盘聚焦时提高不透明度。也可通过 Tampermonkey 菜单展开/收起。“唯一精确匹配时自动关联”和“为 MAL-Sync 提供匹配标题”可分别关闭。
+
+浮动按钮会读取 MAL-Sync 的 `.open-info-popup.floatbutton` 位置，居中放在其上方，间距 8 像素；MAL-Sync 按钮尚未出现时，暂按其默认右下角位置排列。窗口缩放或按钮移到左侧时会重新定位，展开面板保持在可视区域内。
+
+Plex 播放器最大化为满窗口、视频铺满窗口或进入浏览器全屏时，**整个助手自动隐藏**；回到迷你播放器或退出全屏后恢复之前的展开/收起状态。自动匹配仍在后台运行。最大化判断参考 Plex 4 的播放器容器类名，并用视频尺寸作兼容处理；以后若 Plex 改变布局，可能需要调整选择器。
 
 ## 与 MAL-Sync 的配合方式
 
@@ -44,6 +48,8 @@ MAL-Sync 可能已缓存旧的搜索结果，或当前正在等待你选择条�
 - [Plex 适配器](https://github.com/MALSync/MALSync/blob/master/src/pages-chibi/implementations/Plex/main.ts)
 - [元数据事件代理](https://github.com/MALSync/MALSync/blob/master/src/pages-chibi/proxies/requestProxy.ts)
 - [纠正窗口](https://github.com/MALSync/MALSync/blob/master/src/_provider/Search/correctionApp.vue)
+- [浮动按钮定位与样式](https://github.com/MALSync/MALSync/blob/master/src/floatbutton/init.ts)
+- [Plex 全屏隐藏样式](https://github.com/MALSync/MALSync/blob/master/src/pages-chibi/implementations/Plex/style.less)
 
 旧版本、浏览器脚本隔离或未来接口变化可能影响事件辅助。复制 MAL 地址及手动关联仍可使用。启用脚本前已加载的元数据不会被补抓，安装后请刷新页面并重新打开季详情。
 
@@ -97,4 +103,4 @@ npx playwright install chromium
 node tests/plex-mal-helper.browser.cjs
 ```
 
-可用 `PLAYWRIGHT_MODULE_PATH` 指定已有的 Playwright 包路径，或用 `PLAYWRIGHT_CHANNEL=msedge` 使用本机 Edge。测试涵盖事件标题辅助、开放 Shadow DOM 纠正窗口、同季复用、跨季隔离、切页竞争、网络失败与缓存回退。真实 Plex 页面、Tampermonkey 隔离行为及账号同步需要安装后验证。
+可用 `PLAYWRIGHT_MODULE_PATH` 指定已有的 Playwright 包路径，或用 `PLAYWRIGHT_CHANNEL=msedge` 使用本机 Edge。测试涵盖紧凑浮动按钮、跟随 MAL-Sync 定位、窄屏边界、真实浏览器全屏、满窗口/迷你播放器切换，以及事件标题辅助、开放 Shadow DOM 纠正窗口、同季复用、跨季隔离、切页竞争、网络失败与缓存回退。真实 Plex 页面、Tampermonkey 隔离行为及账号同步需要安装后验证。

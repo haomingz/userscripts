@@ -27,6 +27,7 @@ function initialize(config) {
     [prefix + 'auto']: config.auto,
     [prefix + 'assist']: true,
   };
+  if (typeof config.collapsed === 'boolean') window.__storage[prefix + 'collapsed'] = config.collapsed;
   if (config.cached) window.__storage[prefix + 'dataset'] = { time: Date.now() - config.cacheAge, items: config.dataset.items };
   window.__requests = [];
   window.__received = [];
@@ -61,9 +62,10 @@ async function fixture(browser, options = {}) {
   const context = await browser.newContext({ viewport: { width: 1200, height: 900 } });
   await context.route('**/*', request => request.fulfill({ contentType: 'text/html',
     body: '<!doctype html><html><head><meta charset="utf-8"></head><body style="background:#15171b;color:#ddd"><h2>Plex 测试页面</h2></body></html>' }));
-  const config = { dataset, auto: true, cached: true, cacheAge: 0, responses: [], ...options };
+  const config = { dataset, auto: true, cached: true, cacheAge: 0, responses: [], collapsed: false, ...options };
   await context.addInitScript({ content: `(${initialize.toString()})(${JSON.stringify(config)});\n${script}` });
   const page = await context.newPage();
+  page.setDefaultTimeout(10000);
   await page.goto(route(2));
   await page.locator('#plex-chinese-mal-helper').waitFor();
   return { context, page, helper: page.locator('#plex-chinese-mal-helper'), config };
@@ -89,6 +91,7 @@ async function waitMapping(page, malId) {
 }
 
 async function runCase(browser, name, options, callback) {
+  console.log(`RUN ${name}`);
   const value = await fixture(browser, options);
   try {
     await callback(value);
@@ -97,10 +100,111 @@ async function runCase(browser, name, options, callback) {
   } finally { await value.context.close(); }
 }
 
+async function runUiCases(browser) {
+  await runCase(browser, '默认收起为单个半透明小按钮，展开收起和 Escape 可用', { collapsed: null }, async ({ page, helper }) => {
+    const launcher = helper.getByRole('button', { name: '打开中文番剧 MAL 助手', exact: true, includeHidden: true });
+    await launcher.waitFor();
+    assert.equal(await helper.locator('button:visible').count(), 1);
+    const bounds = await helper.boundingBox();
+    assert.ok(bounds.width <= 44 && bounds.height <= 44);
+    assert.ok(await launcher.evaluate(node => Number(getComputedStyle(node).opacity) < 1));
+    await launcher.click();
+    await helper.getByRole('dialog').waitFor();
+    assert.equal(await launcher.getAttribute('aria-expanded'), 'true');
+    assert.equal(await helper.getByLabel('番剧标题').evaluate(node => node === node.getRootNode().activeElement), true);
+    await helper.getByLabel('番剧标题').press('Escape');
+    await launcher.waitFor();
+    assert.equal(await helper.locator('button:visible').count(), 1);
+    assert.equal(await page.evaluate(prefix => window.__storage[prefix + 'collapsed'], prefix), true);
+    await launcher.click();
+    await helper.getByRole('button', { name: '收起中文番剧 MAL 助手' }).click();
+    assert.equal(await helper.locator('button:visible').count(), 1);
+  });
+
+  await runCase(browser, '跟随 MAL-Sync 按钮上方定位，左右换位和窄屏均不越界', { collapsed: true }, async ({ page, helper }) => {
+    await page.evaluate(() => {
+      const anchor = document.createElement('button');
+      anchor.className = 'open-info-popup floatbutton';
+      anchor.textContent = 'MAL';
+      anchor.style.cssText = 'position:fixed;right:40px;bottom:40px;width:56px;height:56px;border-radius:50%';
+      document.body.append(anchor);
+    });
+    await page.waitForFunction(() => {
+      const a = document.querySelector('.floatbutton').getBoundingClientRect();
+      const b = document.querySelector('#plex-chinese-mal-helper').getBoundingClientRect();
+      return Math.abs(a.left + a.width / 2 - (b.left + b.width / 2)) < 1 && b.bottom < a.top;
+    });
+    await page.locator('.floatbutton').evaluate(node => { node.style.left = '24px'; node.style.right = 'auto'; });
+    await page.waitForFunction(() => document.querySelector('#plex-chinese-mal-helper').getBoundingClientRect().left < 50);
+    await helper.getByRole('button', { name: '打开中文番剧 MAL 助手' }).click();
+    let bounds = await helper.getByRole('dialog').boundingBox();
+    assert.ok(bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 1200);
+    await page.setViewportSize({ width: 360, height: 640 });
+    await page.waitForFunction(() => {
+      const panel = document.querySelector('#plex-chinese-mal-helper').shadowRoot.querySelector('.panel').getBoundingClientRect();
+      return panel.left >= 0 && panel.right <= innerWidth && panel.top >= 0 && panel.bottom <= innerHeight;
+    });
+    await helper.getByRole('button', { name: '收起中文番剧 MAL 助手' }).click();
+    await page.locator('.floatbutton').evaluate(node => { node.style.display = 'none'; });
+    bounds = await helper.boundingBox();
+    assert.ok(bounds.x < 50, 'MAL-Sync 暂时隐藏时保持最近的按钮位置');
+    if (process.env.PLEX_HELPER_COMPACT_SCREENSHOT) {
+      await page.setViewportSize({ width: 1200, height: 900 });
+      await page.locator('.floatbutton').evaluate(node => {
+        node.style.cssText = 'position:fixed;right:40px;bottom:40px;width:56px;height:56px;border-radius:50%;background:rgba(158,158,158,.2);color:white;border:0';
+      });
+      await page.waitForFunction(() => document.querySelector('#plex-chinese-mal-helper').getBoundingClientRect().left > 1000);
+      await page.mouse.move(0, 0);
+      await page.screenshot({ path: process.env.PLEX_HELPER_COMPACT_SCREENSHOT });
+    }
+  });
+
+  await runCase(browser, '浏览器全屏时隐藏整个助手，退出后恢复原展开状态', { collapsed: false }, async ({ page, helper }) => {
+    await page.evaluate(() => {
+      const enter = document.createElement('button'); enter.textContent = '进入测试全屏';
+      enter.onclick = () => document.documentElement.requestFullscreen();
+      document.body.append(enter);
+    });
+    await page.getByRole('button', { name: '进入测试全屏', exact: true }).click();
+    await page.waitForFunction(() => Boolean(document.fullscreenElement));
+    await helper.waitFor({ state: 'hidden' });
+    assert.equal(await page.evaluate(prefix => window.__storage[prefix + 'collapsed'], prefix), false);
+    await page.evaluate(() => document.exitFullscreen());
+    await helper.getByRole('dialog').waitFor();
+  });
+
+  await runCase(browser, 'Plex 满窗口隐藏，迷你播放器恢复；旧版大视频尺寸变化也可识别', { collapsed: true }, async ({ page, helper }) => {
+    await page.evaluate(() => {
+      const player = document.createElement('div');
+      player.id = 'test-player'; player.className = 'Player-fullPlayerContainer-example';
+      player.style.cssText = 'position:fixed;inset:0';
+      const video = document.createElement('video'); video.style.cssText = 'width:100%;height:100%';
+      player.append(video); document.body.append(player);
+    });
+    await helper.waitFor({ state: 'hidden' });
+    await page.locator('#test-player').evaluate(node => {
+      node.className = 'Player-miniPlayerContainer-example';
+      node.style.cssText = 'position:fixed;right:0;bottom:0;width:320px;height:180px';
+    });
+    await helper.getByRole('button', { name: '打开中文番剧 MAL 助手' }).waitFor();
+    await helper.getByRole('button', { name: '打开中文番剧 MAL 助手' }).click();
+    await page.locator('#test-player').evaluate(node => {
+      node.className = 'legacy-player'; node.style.cssText = 'position:fixed;inset:0';
+    });
+    await helper.waitFor({ state: 'hidden' });
+    await page.locator('#test-player').evaluate(node => { node.style.cssText = 'position:fixed;left:0;top:0;width:320px;height:180px'; });
+    await helper.getByRole('dialog').waitFor();
+    await page.locator('#test-player').evaluate(node => node.remove());
+    assert.equal(await helper.getByRole('dialog').isVisible(), true);
+  });
+
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true,
     ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) });
   try {
+    await runUiCases(browser);
     await runCase(browser, '自动匹配、标准标题事件、原始数据与同季复用', {}, async ({ page, helper }) => {
       const original = await send(page, first);
       assert.equal(original.parentTitle, first.parentTitle);
@@ -285,6 +389,6 @@ async function runCase(browser, name, options, callback) {
       assert.equal(await page.evaluate(() => window.pwned), undefined);
       assert.ok((await helper.locator('.candidate').textContent()).includes('<img src=x'));
     });
-    console.log('13 browser regression scenarios passed. All API responses were mocked.');
+    console.log('17 browser regression scenarios passed. All API responses were mocked.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
